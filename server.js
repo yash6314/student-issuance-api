@@ -4,12 +4,12 @@ const multer = require("multer");
 const csv = require("csv-parser");
 const cors = require("cors");
 const { Parser } = require("json2csv");
+const fs = require("fs");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Load env variables
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -17,7 +17,6 @@ const pool = new Pool({
 
 const API_KEY = process.env.API_KEY || "changeme";
 
-// Middleware for API key check
 function checkApiKey(req, res, next) {
   if (req.headers["x-api-key"] !== API_KEY) {
     return res.status(403).json({ error: "Forbidden" });
@@ -25,13 +24,10 @@ function checkApiKey(req, res, next) {
   next();
 }
 
-// Multer for CSV uploads
 const upload = multer({ dest: "uploads/" });
 
-// Import students via CSV
 app.post("/import-students", checkApiKey, upload.single("file"), (req, res) => {
   const results = [];
-  const fs = require("fs");
   fs.createReadStream(req.file.path)
     .pipe(csv())
     .on("data", (data) => results.push(data))
@@ -45,18 +41,17 @@ app.post("/import-students", checkApiKey, upload.single("file"), (req, res) => {
         }
         res.json({ success: true, count: results.length });
       } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Database error" });
+        console.error("DB ERROR import:", err);
+        res.status(500).json({ error: "Database error", details: err.message });
+      } finally {
+        try { fs.unlinkSync(req.file.path); } catch(e){}
       }
     });
 });
 
-// Add a single student
 app.post("/add-student", checkApiKey, async (req, res) => {
   const { htno, name, uid } = req.body;
-  if (!htno || !name || !uid) {
-    return res.status(400).json({ error: "Missing fields" });
-  }
+  if (!htno || !name || !uid) return res.status(400).json({ error: "Missing fields" });
   try {
     await pool.query(
       "INSERT INTO students (htno, name, uid) VALUES ($1, $2, $3) ON CONFLICT (uid) DO NOTHING",
@@ -64,39 +59,34 @@ app.post("/add-student", checkApiKey, async (req, res) => {
     );
     res.json({ success: true });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    console.error("DB ERROR add-student:", err);
+    res.status(500).json({ error: "Database error", details: err.message });
   }
 });
 
-// Check card
 app.get("/check-card", checkApiKey, async (req, res) => {
   const { uid } = req.query;
   if (!uid) return res.status(400).json({ error: "UID required" });
 
   try {
     const student = await pool.query("SELECT * FROM students WHERE uid = $1", [uid]);
-    if (student.rows.length === 0) {
-      return res.status(404).json({ error: "Student not found" });
-    }
+    if (student.rows.length === 0) return res.status(404).json({ error: "Student not found" });
 
     const issued = await pool.query("SELECT * FROM issuance WHERE uid = $1", [uid]);
     res.json({
       student: student.rows[0],
-      issued: issued.rows.length > 0
+      issued: issued.rows.length > 0,
+      issuedRow: issued.rows[0] || null
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    console.error("DB ERROR check-card:", err);
+    res.status(500).json({ error: "Database error", details: err.message });
   }
 });
 
-// Mark issued
 app.post("/mark-issued", checkApiKey, async (req, res) => {
   const { uid, issued_by } = req.body;
-  if (!uid || !issued_by) {
-    return res.status(400).json({ error: "Missing fields" });
-  }
+  if (!uid || !issued_by) return res.status(400).json({ error: "Missing fields" });
   try {
     await pool.query(
       "INSERT INTO issuance (uid, issued_by) VALUES ($1, $2) ON CONFLICT (uid) DO NOTHING",
@@ -104,12 +94,11 @@ app.post("/mark-issued", checkApiKey, async (req, res) => {
     );
     res.json({ success: true });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    console.error("DB ERROR mark-issued:", err);
+    res.status(500).json({ error: "Database error", details: err.message });
   }
 });
 
-// Export issued list
 app.get("/export-issued", checkApiKey, async (req, res) => {
   try {
     const data = await pool.query(
@@ -121,8 +110,8 @@ app.get("/export-issued", checkApiKey, async (req, res) => {
     res.attachment("issued_cards.csv");
     return res.send(csvData);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Database error" });
+    console.error("DB ERROR export-issued:", err);
+    res.status(500).json({ error: "Database error", details: err.message });
   }
 });
 
