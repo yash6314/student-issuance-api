@@ -87,11 +87,23 @@ app.get("/check-card", checkApiKey, async (req, res) => {
 app.post("/mark-issued", checkApiKey, async (req, res) => {
   const { uid, issued_by } = req.body;
   if (!uid || !issued_by) return res.status(400).json({ error: "Missing fields" });
+
   try {
+    // Fetch htno from students table
+    const studentRes = await pool.query("SELECT htno FROM students WHERE uid = $1", [uid]);
+    if (studentRes.rows.length === 0) {
+      return res.status(400).json({ error: "Student not found" });
+    }
+    const htno = studentRes.rows[0].htno;
+
+    // Insert into issuance with htno and current timestamp
     await pool.query(
-      "INSERT INTO issuance (uid, issued_by) VALUES ($1, $2) ON CONFLICT (uid) DO NOTHING",
-      [uid, issued_by]
+      `INSERT INTO issuance (uid, issued_by, htno, issued_at) 
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (uid) DO NOTHING`,
+      [uid, issued_by, htno]
     );
+
     res.json({ success: true });
   } catch (err) {
     console.error("DB ERROR mark-issued:", err);
